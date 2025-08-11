@@ -1,0 +1,57 @@
+{
+  "name": "stateid",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Therapist state verification system for video conferences",
+  "author": "StateID Team",
+  "license": "UNLICENSED",
+  "workspaces": [
+    "services/wrapper-service",
+    "services/calendar-service",
+    "services/shared",
+    "desktop-app"
+  ],
+  "scripts": {
+    "dev:all": "concurrently \"npm run dev:wrapper\" \"npm run dev:calendar\" \"npm run dev:desktop\"",
+    "dev:wrapper": "npm run dev --workspace=services/wrapper-service",
+    "dev:calendar": "npm run dev --workspace=services/calendar-service",
+    "dev:desktop": "npm run dev --workspace=desktop-app",
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces",
+    "test:wrapper": "npm run test --workspace=services/wrapper-service",
+    "test:calendar": "npm run test --workspace=services/calendar-service",
+    "test:desktop": "npm run test --workspace=desktop-app",
+    "lint": "npm run lint --workspaces",
+    "type-check": "npm run type-check --workspaces",
+    "db:migrate": "npm run migrate --workspace=services/calendar-service",
+    "db:seed": "npm run seed --workspace=services/calendar-service",
+    "deploy:production": "echo 'Production deployment script'",
+    "postinstall": "husky install"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "concurrently": "^8.2.2",
+    "eslint": "^8.54.0",
+    "eslint-config-prettier": "^9.0.0",
+    "eslint-plugin-prettier": "^5.0.1",
+    "husky": "^8.0.3",
+    "lint-staged": "^15.1.0",
+    "prettier": "^3.1.0",
+    "typescript": "^5.3.2"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "lint-staged": {
+    "*.{js,ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml}": [
+      "prettier --write"
+    ]
+  }
+}
