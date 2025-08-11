@@ -8,6 +8,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
+    "demo": "tsx src/test-demo.ts",
     "test": "jest",
     "type-check": "tsc --noEmit",
     "lint": "eslint src --ext .ts"

@@ -57,6 +57,9 @@ async function buildServer() {
 
         // Check if we have redirect data
         if (redirectData.status === 'rejected' || !redirectData.value) {
+          const processingTime = Date.now() - startTime;
+          metricsService.recordRedirectLatency(processingTime, { result: 'not_found' });
+          metricsService.recordHttpRequest('GET', '/r/:token', 404, processingTime);
           reply.code(404);
           return { error: 'Invalid or expired link' };
         }
@@ -66,6 +69,11 @@ async function buildServer() {
 
         // If geo lookup is taking too long, fail open with redirect
         if (processingTime >= config.FAIL_OPEN_THRESHOLD_MS || geoResult.status === 'rejected') {
+          // Record metrics for fail-open
+          metricsService.recordFailOpen('timeout', processingTime);
+          metricsService.recordRedirectLatency(processingTime, { result: 'fail_open' });
+          metricsService.recordHttpRequest('GET', '/r/:token', 302, processingTime);
+          
           // Record the attempt for background processing
           void redirectService.recordFailOpen(sessionId, clientIp, processingTime);
           
@@ -77,6 +85,10 @@ async function buildServer() {
         // We have geo data within time budget
         const geoData = geoResult.value;
         
+        // Record successful metrics
+        metricsService.recordRedirectLatency(processingTime, { result: 'success' });
+        metricsService.recordHttpRequest('GET', '/r/:token', 302, processingTime);
+        
         // Record the verification
         void redirectService.recordVerification(sessionId, clientIp, geoData, processingTime);
 
@@ -87,16 +99,22 @@ async function buildServer() {
         const processingTime = Date.now() - startTime;
         fastify.log.error({ error, token, clientIp, processingTime }, 'Redirect error');
         
+        // Record error metrics
+        metricsService.recordFailOpen('error', processingTime);
+        metricsService.recordRedirectLatency(processingTime, { result: 'error' });
+        
         // Try to fail open to original URL if we can resolve token
         try {
           const redirectData = await redirectService.resolveToken(token);
           if (redirectData?.originalUrl) {
+            metricsService.recordHttpRequest('GET', '/r/:token', 302, processingTime);
             reply.redirect(302, redirectData.originalUrl);
             return;
           }
         } catch {}
 
         // Ultimate fallback
+        metricsService.recordHttpRequest('GET', '/r/:token', 500, processingTime);
         reply.code(500);
         return { error: 'Service temporarily unavailable' };
       }
@@ -121,6 +139,17 @@ async function buildServer() {
     // Metrics endpoint (internal)
     fastify.get('/metrics', async () => {
       return await metricsService.getMetrics();
+    });
+
+    // Prometheus metrics endpoint
+    fastify.get('/metrics/prometheus', async (request, reply) => {
+      reply.type('text/plain');
+      return metricsService.exportPrometheusMetrics();
+    });
+
+    // Alerts endpoint
+    fastify.get('/alerts', async () => {
+      return await metricsService.getAlerts();
     });
 
     // Graceful shutdown
