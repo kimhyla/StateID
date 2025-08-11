@@ -8,9 +8,8 @@ import { metricsService } from './services/metrics-service';
 
 // Create Fastify instance optimized for speed
 const fastify = Fastify({
-  logger: {
-    level: config.LOG_LEVEL,
-    prettyPrint: config.NODE_ENV === 'development'
+  logger: config.NODE_ENV === 'development' ? true : {
+    level: config.LOG_LEVEL
   },
   trustProxy: true, // For accurate client IPs
   disableRequestLogging: !config.ENABLE_REQUEST_LOGGING

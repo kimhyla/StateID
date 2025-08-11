@@ -23,8 +23,8 @@
     "maxmind": "^4.3.6",
     "axios": "^1.6.2",
     "jose": "^5.1.3",
-    "crypto": "^1.0.1",
-    "dotenv": "^16.3.1"
+    "dotenv": "^16.3.1",
+    "redis": "^4.6.8"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
