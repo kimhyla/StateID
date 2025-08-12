@@ -36,6 +36,18 @@ CREATE TABLE IF NOT EXISTS patterns (
 
 const id = customAlphabet('abcdefghijkmnopqrstuvwxyz23456789', 10);
 
+type SessionRow = {
+  id: string;
+  meeting_ref: string | null;
+  clinician_id: string | null;
+  start_at: string | null;
+  end_at: string | null;
+  platform: string | null;
+  original_url: string;
+  wrapped_url: string | null;
+  created_at: string;
+};
+
 // Simple URL detection for MVP (Zoom/Meet/Teams)
 const matchKnownUrl = (text: string): string | null => {
   const patterns: RegExp[] = [
@@ -107,26 +119,23 @@ router.get('/../../r/:sessionToken', async (req, res) => {
 });
 
 // Install top-level redirect on the app via attach helper
-export const attachRedirect = (app: any) => {
+export const attachRedirect = (app: any): void => {
   app.get('/r/:sessionToken', async (req: any, res: any) => {
     const startedAt = Date.now();
     const [sessionId] = String(req.params.sessionToken || '').split('.');
-    const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+    const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId) as SessionRow | undefined;
     if (!row) return res.status(404).type('text/plain').send('Unknown link');
 
     const originalUrl: string = row.original_url;
-    let failOpen = false;
 
     // Simulate geo checks in parallel with a timeout budget of 200ms
     const budgetMs = 200;
     const geoPromise = new Promise<{ state: string | null }>((resolve) => {
-      // Simulate 50ms lookup
       setTimeout(() => resolve({ state: 'CT' }), 50);
     });
 
     let resolved = false;
     const timer = setTimeout(() => {
-      failOpen = true;
       if (!resolved) {
         resolved = true;
         res.redirect(302, originalUrl);
@@ -141,7 +150,7 @@ export const attachRedirect = (app: any) => {
     }, budgetMs);
 
     try {
-      const geo = await geoPromise;
+      await geoPromise;
       if (!resolved) {
         clearTimeout(timer);
         resolved = true;
@@ -152,7 +161,6 @@ export const attachRedirect = (app: any) => {
           elapsed,
           0,
         );
-        // In a full build, we would HMAC-sign and append metadata. For prototype, just redirect.
         res.redirect(302, originalUrl);
       }
     } catch (_e) {
