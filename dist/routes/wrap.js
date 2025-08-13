@@ -1,8 +1,14 @@
 import { Router } from 'express';
 import Database from 'better-sqlite3';
 import { customAlphabet, nanoid } from 'nanoid';
+import { loadKeySetFromEnv, sha256Hex, hmacSha256Hex, verifySignature } from '../services/crypto';
 const router = Router();
 const db = new Database(process.cwd() + '/db/stateid.db');
+// Ensure clicks has reason column
+try {
+    db.exec("ALTER TABLE clicks ADD COLUMN reason TEXT");
+}
+catch { }
 db.pragma('journal_mode = WAL');
 db.exec(`
 CREATE TABLE IF NOT EXISTS sessions (
@@ -22,6 +28,7 @@ CREATE TABLE IF NOT EXISTS clicks (
   ts TEXT DEFAULT (datetime('now')),
   ms_to_redirect INTEGER,
   fail_open INTEGER DEFAULT 0,
+  reason TEXT,
   FOREIGN KEY(session_id) REFERENCES sessions(id)
 );
 CREATE TABLE IF NOT EXISTS patterns (
@@ -32,20 +39,21 @@ CREATE TABLE IF NOT EXISTS patterns (
 );
 `);
 const id = customAlphabet('abcdefghijkmnopqrstuvwxyz23456789', 10);
-// Simple URL detection for MVP (Zoom/Meet/Teams)
-const matchKnownUrl = (text) => {
-    const patterns = [
-        /https?:\/\/(www\.)?zoom\.us\/j\/[^\s)]+/i,
-        /https?:\/\/meet\.google\.com\/[a-z-]+/i,
-        /https?:\/\/teams\.microsoft\.com\/l\/meetup-join\/[^\s)]+/i,
-    ];
-    for (const re of patterns) {
-        const m = text.match(re);
-        if (m)
-            return m[0];
+function isWithinMeetingWindow(row, nowUtc) {
+    const start = row.start_at ? new Date(row.start_at) : null;
+    const end = row.end_at ? new Date(row.end_at) : null;
+    if (!start)
+        return true; // if unknown, allow in dev
+    const windowStart = new Date(start.getTime() - 60 * 60 * 1000);
+    let windowEnd;
+    if (end) {
+        windowEnd = new Date(end.getTime() + 12 * 60 * 60 * 1000);
     }
-    return null;
-};
+    else {
+        windowEnd = new Date(start.getTime() + 12 * 60 * 60 * 1000);
+    }
+    return nowUtc >= windowStart && nowUtc <= windowEnd;
+}
 // POST /api/wrap/learn { exampleUrl }
 router.post('/learn', (req, res) => {
     const exampleUrl = req.body?.exampleUrl;
@@ -74,7 +82,11 @@ router.post('/generate', (req, res) => {
         if (u.protocol !== 'https:' && u.protocol !== 'http:')
             return res.status(400).json({ error: 'http/https only' });
         const sessionId = nanoid(12);
-        const token = nanoid(16);
+        const keySet = loadKeySetFromEnv();
+        const fpr = sha256Hex(originalUrl).slice(0, 16);
+        const payload = `${sessionId}.${fpr}`;
+        const sig = hmacSha256Hex(keySet.currentKey, payload);
+        const token = `${keySet.currentKid}.${sig}`;
         const wrappedUrl = `${req.protocol}://${req.get('host')}/r/${sessionId}.${token}`;
         db.prepare(`INSERT INTO sessions (id, meeting_ref, clinician_id, start_at, end_at, platform, original_url, wrapped_url)
       VALUES (?,?,?,?,?,?,?,?)`).run(sessionId, meetingRef || null, clinicianId || null, startAt || null, endAt || null, platform || null, originalUrl, wrappedUrl);
@@ -86,49 +98,59 @@ router.post('/generate', (req, res) => {
 });
 // Lightweight redirect: /r/:sessionToken
 router.get('/../../r/:sessionToken', async (req, res) => {
-    // This mounting path hack ensures app.get('/r/...') works from /api/wrap router base
     res.redirect(302, '/r/' + req.params.sessionToken);
 });
 // Install top-level redirect on the app via attach helper
 export const attachRedirect = (app) => {
     app.get('/r/:sessionToken', async (req, res) => {
         const startedAt = Date.now();
-        const [sessionId] = String(req.params.sessionToken || '').split('.');
+        const parts = String(req.params.sessionToken || '').split('.');
+        const sessionId = parts[0];
+        const kid = parts[1];
+        const sigHex = parts[2];
         const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
         if (!row)
             return res.status(404).type('text/plain').send('Unknown link');
         const originalUrl = row.original_url;
-        // Simulate geo checks in parallel with a timeout budget of 200ms
+        const keySet = loadKeySetFromEnv();
+        const fpr = sha256Hex(originalUrl).slice(0, 16);
+        const payload = `${sessionId}.${fpr}`;
+        let valid = false;
+        if (kid && sigHex) {
+            valid = verifySignature(keySet, kid, payload, sigHex);
+        }
+        const withinTtl = isWithinMeetingWindow(row, new Date());
+        const finish = (failOpen, reason) => {
+            const elapsed = Date.now() - startedAt;
+            db.prepare('INSERT INTO clicks (id, session_id, ms_to_redirect, fail_open, reason) VALUES (?,?,?,?,?)').run(nanoid(10), row.id, elapsed, failOpen, reason || null);
+            res.redirect(302, originalUrl);
+        };
         const budgetMs = 200;
-        const geoPromise = new Promise((resolve) => {
-            setTimeout(() => resolve({ state: 'CT' }), 50);
-        });
         let resolved = false;
         const timer = setTimeout(() => {
             if (!resolved) {
                 resolved = true;
-                res.redirect(302, originalUrl);
-                const elapsed = Date.now() - startedAt;
-                db.prepare('INSERT INTO clicks (id, session_id, ms_to_redirect, fail_open) VALUES (?,?,?,?)').run(nanoid(10), row.id, elapsed, 1);
+                finish(1, 'timeout_fail_open');
             }
         }, budgetMs);
         try {
-            await geoPromise;
+            // Simulate geo lookup quickly
+            await new Promise((r) => setTimeout(r, 30));
             if (!resolved) {
                 clearTimeout(timer);
                 resolved = true;
-                const elapsed = Date.now() - startedAt;
-                db.prepare('INSERT INTO clicks (id, session_id, ms_to_redirect, fail_open) VALUES (?,?,?,?)').run(nanoid(10), row.id, elapsed, 0);
-                res.redirect(302, originalUrl);
+                if (!valid)
+                    return finish(1, 'bad_signature');
+                if (!withinTtl)
+                    return finish(1, 'ttl_outside_window');
+                return finish(0);
             }
         }
-        catch (_e) {
+        catch {
             if (!resolved) {
                 clearTimeout(timer);
                 resolved = true;
-                const elapsed = Date.now() - startedAt;
-                db.prepare('INSERT INTO clicks (id, session_id, ms_to_redirect, fail_open) VALUES (?,?,?,?)').run(nanoid(10), row.id, elapsed, 1);
-                res.redirect(302, originalUrl);
+                return finish(1, 'lookup_error');
             }
         }
     });
