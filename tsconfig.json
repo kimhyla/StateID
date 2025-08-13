@@ -45,5 +45,7 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "moduleResolution": "node10",
-  }
+     },
+   "include": ["src"],
+   "exclude": ["dist", "node_modules", "tests", "test"]
 }
